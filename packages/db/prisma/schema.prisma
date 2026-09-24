@@ -1,0 +1,632 @@
+// LLMBench - Prisma Schema
+// PostgreSQL + pgvector
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions", "fullTextSearch"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DATABASE_DIRECT_URL")
+  extensions = [pgvector(map: "vector"), pg_trgm, uuid_ossp(map: "uuid-ossp")]
+}
+
+model User {
+  id               String       @id @default(cuid())
+  email            String       @unique
+  emailVerified    DateTime?
+  name             String?
+  displayName      String?
+  avatarUrl        String?
+  role             GlobalRole   @default(USER)
+  passwordHash     String?
+  totpEnabled      Boolean      @default(false)
+  stripeCustomerId String?      @unique
+  onboardingDone   Boolean      @default(false)
+  lastActiveAt     DateTime?
+  timezone         String       @default("UTC")
+  locale           String       @default("en")
+  theme            String       @default("system")
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  accounts      Account[]
+  sessions      Session[]
+  memberships   Membership[]
+  apiKeys       ApiKey[]
+  prompts       Prompt[]
+  runs          Run[]
+  humanRatings  HumanRating[]
+  auditLogs     AuditLog[]
+  invitesSent   TeamInvite[]   @relation("InviteSender")
+  notifications Notification[]
+  subscriptions Subscription[]
+  ownedWorkspaces Workspace[]  @relation("WorkspaceOwner")
+
+  @@index([email])
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refreshToken      String?
+  accessToken       String?
+  expiresAt         Int?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+enum GlobalRole {
+  SUPER_ADMIN
+  ADMIN
+  USER
+}
+
+model Workspace {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String?
+  logoUrl     String?
+  ownerId     String
+  plan        PlanTier @default(FREE)
+  settings    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner        User            @relation("WorkspaceOwner", fields: [ownerId], references: [id])
+  memberships  Membership[]
+  projects     Project[]
+  prompts      Prompt[]
+  testSuites   TestSuite[]
+  apiKeys      ApiKey[]
+  webhooks     Webhook[]
+  subscriptions Subscription[]
+  quotas       Quota[]
+  auditLogs    AuditLog[]
+  invites      TeamInvite[]
+  integrations Integration[]
+  featureFlags FeatureFlag[]
+  datasets     Dataset[]
+  agents       Agent[]
+
+  @@map("workspaces")
+}
+
+model Membership {
+  id          String        @id @default(cuid())
+  userId      String
+  workspaceId String
+  role        WorkspaceRole @default(MEMBER)
+  joinedAt    DateTime      @default(now())
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  @@unique([userId, workspaceId])
+  @@map("memberships")
+}
+
+model TeamInvite {
+  id          String        @id @default(cuid())
+  email       String
+  workspaceId String
+  role        WorkspaceRole @default(MEMBER)
+  token       String        @unique @default(cuid())
+  senderId    String
+  status      InviteStatus  @default(PENDING)
+  expiresAt   DateTime
+  createdAt   DateTime      @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  sender      User      @relation("InviteSender", fields: [senderId], references: [id])
+  @@map("team_invites")
+}
+
+enum WorkspaceRole { OWNER ADMIN MEMBER VIEWER BILLING }
+enum InviteStatus { PENDING ACCEPTED DECLINED EXPIRED }
+enum PlanTier { FREE PRO TEAM ENTERPRISE }
+
+model Project {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  description String?
+  color       String   @default("#6366f1")
+  isArchived  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  workspace   Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  testSuites  TestSuite[]
+  runs        Run[]
+  @@map("projects")
+}
+
+model Provider {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  displayName String
+  baseUrl     String?
+  logoUrl     String?
+  isActive    Boolean  @default(true)
+  isLocal     Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  models      Model[]
+  @@map("providers")
+}
+
+model Model {
+  id               String   @id @default(cuid())
+  providerId       String
+  name             String
+  displayName      String
+  contextLength    Int      @default(4096)
+  maxOutputTokens  Int      @default(4096)
+  inputPricePer1k  Float    @default(0)
+  outputPricePer1k Float    @default(0)
+  capabilities     String[] @default([])
+  isActive         Boolean  @default(true)
+  isDeprecated     Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  provider   Provider    @relation(fields: [providerId], references: [id])
+  runItems   RunItem[]
+  eloRatings EloRating[]
+  @@unique([providerId, name])
+  @@map("models")
+}
+
+model Prompt {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  userId       String
+  name         String
+  description  String?
+  content      String
+  systemPrompt String?
+  variables    Json     @default("[]")
+  tags         String[] @default([])
+  isPublic     Boolean  @default(false)
+  isFavorite   Boolean  @default(false)
+  isArchived   Boolean  @default(false)
+  version      Int      @default(1)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  workspace Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User            @relation(fields: [userId], references: [id])
+  versions  PromptVersion[]
+  testCases TestCase[]
+  @@index([workspaceId])
+  @@map("prompts")
+}
+
+model PromptVersion {
+  id           String   @id @default(cuid())
+  promptId     String
+  version      Int
+  content      String
+  systemPrompt String?
+  variables    Json     @default("[]")
+  createdAt    DateTime @default(now())
+  prompt       Prompt   @relation(fields: [promptId], references: [id], onDelete: Cascade)
+  @@unique([promptId, version])
+  @@map("prompt_versions")
+}
+
+model TestSuite {
+  id          String   @id @default(cuid())
+  workspaceId String
+  projectId   String?
+  name        String
+  description String?
+  tags        String[] @default([])
+  isActive    Boolean  @default(true)
+  schedule    String?
+  models      String[] @default([])
+  parameters  Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  workspace  Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project    Project?   @relation(fields: [projectId], references: [id])
+  testCases  TestCase[]
+  runs       Run[]
+  @@map("test_suites")
+}
+
+model TestCase {
+  id             String   @id @default(cuid())
+  testSuiteId    String
+  promptId       String?
+  name           String
+  input          String
+  systemPrompt   String?
+  expectedOutput String?
+  criteria       Json     @default("[]")
+  weight         Float    @default(1.0)
+  isActive       Boolean  @default(true)
+  order          Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  testSuite TestSuite @relation(fields: [testSuiteId], references: [id], onDelete: Cascade)
+  prompt    Prompt?   @relation(fields: [promptId], references: [id])
+  runItems  RunItem[]
+  @@map("test_cases")
+}
+
+model Run {
+  id             String    @id @default(cuid())
+  workspaceId    String
+  projectId      String?
+  testSuiteId    String?
+  userId         String
+  name           String?
+  type           RunType   @default(MANUAL)
+  status         RunStatus @default(PENDING)
+  models         String[]
+  parameters     Json      @default("{}")
+  totalItems     Int       @default(0)
+  completedItems Int       @default(0)
+  failedItems    Int       @default(0)
+  totalCost      Float     @default(0)
+  totalTokens    Int       @default(0)
+  avgLatencyMs   Float?
+  avgScore       Float?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  error          String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  workspace  Workspace  @relation(fields: [workspaceId], references: [id])
+  project    Project?   @relation(fields: [projectId], references: [id])
+  testSuite  TestSuite? @relation(fields: [testSuiteId], references: [id])
+  user       User       @relation(fields: [userId], references: [id])
+  items      RunItem[]
+  evaluations Evaluation[]
+  @@index([workspaceId, status])
+  @@map("runs")
+}
+
+model RunItem {
+  id           String        @id @default(cuid())
+  runId        String
+  testCaseId   String?
+  modelId      String
+  status       RunItemStatus @default(PENDING)
+  inputTokens  Int           @default(0)
+  outputTokens Int           @default(0)
+  totalTokens  Int           @default(0)
+  costUsd      Float         @default(0)
+  latencyMs    Int?
+  input        String
+  systemPrompt String?
+  output       String?
+  rawResponse  Json?
+  error        String?
+  score        Float?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  run          Run         @relation(fields: [runId], references: [id], onDelete: Cascade)
+  testCase     TestCase?   @relation(fields: [testCaseId], references: [id])
+  model        Model       @relation(fields: [modelId], references: [id])
+  humanRatings HumanRating[]
+  evaluations  Evaluation[]
+  @@index([runId])
+  @@map("run_items")
+}
+
+enum RunType { MANUAL SCHEDULED API WEBHOOK CI }
+enum RunStatus { PENDING QUEUED RUNNING COMPLETED FAILED CANCELLED PARTIAL }
+enum RunItemStatus { PENDING RUNNING COMPLETED FAILED CANCELLED SKIPPED }
+
+model Evaluation {
+  id           String         @id @default(cuid())
+  runId        String?
+  runItemId    String?
+  type         EvaluationType @default(AUTOMATIC)
+  rubric       Json           @default("{}")
+  results      Json           @default("{}")
+  overallScore Float?
+  judgeModel   String?
+  status       String         @default("pending")
+  error        String?
+  completedAt  DateTime?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  run     Run?     @relation(fields: [runId], references: [id])
+  runItem RunItem? @relation(fields: [runItemId], references: [id])
+  @@map("evaluations")
+}
+
+model HumanRating {
+  id        String   @id @default(cuid())
+  runItemId String
+  userId    String
+  score     Int
+  label     String?
+  notes     String?
+  createdAt DateTime @default(now())
+  runItem   RunItem  @relation(fields: [runItemId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id])
+  @@unique([runItemId, userId])
+  @@map("human_ratings")
+}
+
+model EloRating {
+  id        String   @id @default(cuid())
+  modelId   String
+  category  String   @default("general")
+  rating    Float    @default(1500)
+  wins      Int      @default(0)
+  losses    Int      @default(0)
+  ties      Int      @default(0)
+  updatedAt DateTime @updatedAt
+  model     Model    @relation(fields: [modelId], references: [id])
+  @@unique([modelId, category])
+  @@map("elo_ratings")
+}
+
+enum EvaluationType { AUTOMATIC LLM_JUDGE HUMAN HYBRID }
+
+model Dataset {
+  id          String      @id @default(cuid())
+  workspaceId String
+  name        String
+  description String?
+  type        DatasetType @default(DOCUMENT)
+  itemCount   Int         @default(0)
+  sizeBytes   BigInt      @default(0)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  workspace  Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  documents  Document[]
+  @@map("datasets")
+}
+
+model Document {
+  id         String    @id @default(cuid())
+  datasetId  String
+  name       String
+  mimeType   String
+  sizeBytes  BigInt
+  s3Key      String
+  status     DocStatus @default(PENDING)
+  chunkCount Int       @default(0)
+  content    String?
+  error      String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  dataset    Dataset    @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  embeddings Embedding[]
+  @@map("documents")
+}
+
+model Embedding {
+  id         String                   @id @default(cuid())
+  documentId String
+  content    String
+  chunkIndex Int
+  tokenCount Int
+  model      String                   @default("text-embedding-3-small")
+  createdAt  DateTime                 @default(now())
+  document   Document                 @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  @@index([documentId])
+  @@map("embeddings")
+}
+
+enum DatasetType { DOCUMENT QUESTION_ANSWER CONVERSATION EVAL }
+enum DocStatus { PENDING PROCESSING READY FAILED }
+
+model Agent {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  description String?
+  model       String
+  systemPrompt String?
+  tools       Json     @default("[]")
+  maxSteps    Int      @default(20)
+  temperature Float    @default(0.7)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  workspace  Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  traces     AgentTrace[]
+  @@map("agents")
+}
+
+model AgentTrace {
+  id          String   @id @default(cuid())
+  agentId     String
+  sessionId   String
+  steps       Json     @default("[]")
+  totalSteps  Int      @default(0)
+  totalCost   Float    @default(0)
+  status      String   @default("running")
+  input       String
+  output      String?
+  error       String?
+  startedAt   DateTime @default(now())
+  completedAt DateTime?
+  agent       Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  @@map("agent_traces")
+}
+
+model ApiKey {
+  id          String   @id @default(cuid())
+  workspaceId String?
+  userId      String
+  name        String
+  keyHash     String   @unique
+  keyPrefix   String
+  scopes      String[] @default(["read", "write"])
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User       @relation(fields: [userId], references: [id])
+  @@index([keyHash])
+  @@map("api_keys")
+}
+
+model Webhook {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  url         String
+  secret      String
+  events      String[]
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  workspace   Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  @@map("webhooks")
+}
+
+model WebhookDelivery {
+  id         String   @id @default(cuid())
+  webhookId  String
+  event      String
+  statusCode Int
+  success    Boolean
+  error      String?
+  payload    Json
+  createdAt  DateTime @default(now())
+  @@map("webhook_deliveries")
+}
+
+model Integration {
+  id          String   @id @default(cuid())
+  workspaceId String
+  type        String
+  name        String
+  config      Json     @default("{}")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  @@map("integrations")
+}
+
+model Subscription {
+  id                 String             @id @default(cuid())
+  workspaceId        String
+  userId             String
+  plan               PlanTier
+  status             SubscriptionStatus
+  stripeSubId        String?            @unique
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+  cancelAtPeriodEnd  Boolean            @default(false)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+  user      User      @relation(fields: [userId], references: [id])
+  invoices  Invoice[]
+  @@map("subscriptions")
+}
+
+model Invoice {
+  id             String   @id @default(cuid())
+  subscriptionId String
+  amount         Float
+  currency       String   @default("usd")
+  status         String
+  invoiceUrl     String?
+  createdAt      DateTime @default(now())
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id])
+  @@map("invoices")
+}
+
+model Quota {
+  id          String   @id @default(cuid())
+  workspaceId String   @unique
+  maxRuns     Int      @default(100)
+  maxTokens   BigInt   @default(1000000)
+  maxUsers    Int      @default(3)
+  usedRuns    Int      @default(0)
+  usedTokens  BigInt   @default(0)
+  updatedAt   DateTime @updatedAt
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+  @@map("quotas")
+}
+
+enum SubscriptionStatus { ACTIVE TRIALING PAST_DUE CANCELLED UNPAID PAUSED }
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  workspaceId String
+  userId      String?
+  action      String
+  resource    String
+  resourceId  String?
+  ipAddress   String?
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+  user      User?     @relation(fields: [userId], references: [id])
+  @@index([workspaceId, createdAt])
+  @@map("audit_logs")
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String
+  title     String
+  message   String?
+  url       String?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+model FeatureFlag {
+  id          String   @id @default(cuid())
+  workspaceId String?
+  key         String
+  value       Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  @@unique([workspaceId, key])
+  @@map("feature_flags")
+}
+
+model RedTeamResult {
+  id            String   @id @default(cuid())
+  sessionId     String
+  modelId       String
+  attackType    String
+  attackPayload String
+  modelResponse String
+  passed        Boolean
+  severity      String
+  createdAt     DateTime @default(now())
+  @@map("red_team_results")
+}
